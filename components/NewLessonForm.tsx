@@ -23,7 +23,16 @@ export function NewLessonForm({ known, today }: { known: string[]; today: string
         <label className="field"><span className="eyebrow">Date</span><input className="inp" type="date" value={date} onChange={(e) => setDate(e.target.value)} required /></label>
         <label className="field"><span className="eyebrow">Title</span><input className="inp" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Ordering food" required /></label>
       </div>
-      <SlidePicker known={known} value={pick} onChange={setPick} />
+      <SlidePicker
+        known={known}
+        value={pick}
+        onChange={(p) => {
+          setPick(p);
+          // fill in the title and notes from the slides, without overwriting anything already typed
+          if (p.title) setTitle((t) => t || p.title);
+          if (p.summary) setNotes((n) => n || p.summary);
+        }}
+      />
       <label className="field"><span className="eyebrow">Notes</span><textarea className="inp" value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
       <button className="btn" disabled={pending}>{pending ? "Saving" : "Save lesson"}</button>
     </form>

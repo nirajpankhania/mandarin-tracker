@@ -8,10 +8,10 @@ Built with Next.js, deployed on Vercel, data in Neon Postgres. Both free tiers a
 
 ## What it does
 
-- **Lessons**: date, title and notes. Upload the lesson's slides as `.pptx` or `.pdf`; the text is read
-  in your browser (the file itself is never uploaded or stored) and Chinese words are
-  listed with pinyin for you to tick. Words the slide already glosses
-  (`苹果 píngguǒ apple`, or a table row) come with their meaning filled in.
+- **Lessons**: date, title and notes. Upload the lesson's slides as `.pptx` or `.pdf`. The text is
+  read in your browser (the file itself is never stored), then sent to Google's Gemini model,
+  which returns the lesson's phrases, sentences and key words with pinyin and English, plus a
+  suggested title and summary. You tick what to keep and correct anything before saving.
 - **Homework**: either of you adds tasks with a due date. The student ticks them off and
   leaves a note; the teacher leaves feedback.
 - **Call transcript**: upload or paste a `.vtt`, `.srt` or `.txt` transcript. Sentences that
@@ -29,6 +29,7 @@ Built with Next.js, deployed on Vercel, data in Neon Postgres. Both free tiers a
    Before deploying, add two environment variables:
    - `DATABASE_URL`: the Neon connection string
    - `AUTH_SECRET`: a long random string (`openssl rand -base64 32`)
+   - `GEMINI_API_KEY`: a free key from https://aistudio.google.com/apikey (needed for reading slides)
 4. Open the site Vercel gives you. The first visit shows a setup page that creates the
    database tables and the two logins. It only works once.
 5. Send your teacher the address and their starter password. They can change it under
@@ -39,17 +40,20 @@ Every later push to GitHub redeploys automatically.
 ## Run it on your own computer
 
 ```
-cp .env.example .env.local   # then fill in DATABASE_URL and AUTH_SECRET
+# create .env.local containing DATABASE_URL, AUTH_SECRET and GEMINI_API_KEY
 npm install
 npm run dev
 ```
 
 ## Good to know
 
-- Slides can be `.pptx` or `.pdf`. PDF pages with no selectable text (scans, or slides saved
-  as pictures) are read with OCR in the browser. That is slower, downloads a ~20 MB language
-  file the first time, and can confuse similar-looking characters, so check the word list.
-  In a `.pptx`, text inside pictures is not read.
+- Reading slides needs `GEMINI_API_KEY`. On Gemini's free tier, Google may use what is sent
+  (the slide text, and pictures of pages that have no selectable text) to improve its products.
+  If the key is missing or the free quota runs out, the upload says so and you can still save
+  the lesson and add words by hand.
+- The app tries `gemini-3.8-flash` first and falls back to `gemini-3.5-flash-lite`. Set
+  `GEMINI_MODEL` to try a different model first.
+- Pinyin and meanings from the parser are AI-written; check them before saving.
 - Transcript matching is only as good as the transcript. Set the call's transcription
   language to Chinese, or the Chinese comes out garbled.
 - Dates use the `APP_TIMEZONE` setting (default `America/New_York`).

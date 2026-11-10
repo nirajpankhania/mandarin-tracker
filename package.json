@@ -9,6 +9,7 @@
     "postinstall": "node scripts/copy-pdfjs.mjs"
   },
   "dependencies": {
+    "@google/genai": "^3.0.0",
     "bcryptjs": "^3.0.3",
     "jose": "^6.2.17",
     "jszip": "^3.10.2",
@@ -18,8 +19,7 @@
     "pinyin-pro": "^3.29.5",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "sql.js": "^1.15.2",
-    "tesseract.js": "^7.0.0"
+    "sql.js": "^1.15.2"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "4.3.3",

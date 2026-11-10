@@ -1,15 +1,17 @@
 import type { Slide } from "./pptx";
 
-const HAN = /[㐀-鿿]/;
 const ASSETS = "/pdfjs/";
+const MAX_IMAGE_BYTES = 3_000_000; // total budget for page pictures sent to the server
 
 export type Progress = (message: string) => void;
+export type PdfSlide = Slide & { image?: string };
 
 /**
  * Read the text of each page of a PDF, one "slide" per page. Runs in the browser.
- * Pages that are only pictures (scans, or slides exported as images) are read with OCR instead.
+ * Pages with no selectable text (scans, or slides exported as pictures) come back with a
+ * small JPEG of the page instead, for the AI parser to read.
  */
-export async function readPdf(file: File, onProgress: Progress = () => {}): Promise<{ slides: Slide[]; ocrPages: number }> {
+export async function readPdf(file: File, onProgress: Progress = () => {}): Promise<PdfSlide[]> {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjs.GlobalWorkerOptions.workerSrc = ASSETS + "pdf.worker.min.mjs";
   const task = pdfjs.getDocument({
@@ -22,48 +24,36 @@ export async function readPdf(file: File, onProgress: Progress = () => {}): Prom
   const doc = await task.promise;
 
   try {
-    const texts: string[] = [];
+    const slides: PdfSlide[] = [];
     for (let n = 1; n <= doc.numPages; n++) {
       onProgress(`Reading page ${n} of ${doc.numPages}`);
       const page = await doc.getPage(n);
       const content = await page.getTextContent();
-      texts.push(linesFrom(content.items as TextItem[]));
+      slides.push({ n, text: linesFrom(content.items as TextItem[]) });
     }
 
-    // OCR pages with next to no text. If the whole file has no Chinese at all, the Chinese is
-    // probably inside pictures, so OCR every page.
-    const noChinese = !texts.some((t) => HAN.test(t));
-    const needOcr = texts.map((t) => noChinese || t.replace(/\s/g, "").length < 8);
-    const ocrPages = needOcr.filter(Boolean).length;
-
-    if (ocrPages > 0) {
-      onProgress("Loading the text recogniser (first time takes longest)");
-      const { createWorker } = await import("tesseract.js");
-      const worker = await createWorker(["chi_sim", "eng"]);
-      try {
-        let done = 0;
-        for (let n = 1; n <= doc.numPages; n++) {
-          if (!needOcr[n - 1]) continue;
-          onProgress(`Recognising text in page images (${++done} of ${ocrPages})`);
-          const page = await doc.getPage(n);
-          const base = page.getViewport({ scale: 1 });
-          // whole-number scale keeps picture pages sharp; aim for roughly 2000px across
-          const viewport = page.getViewport({ scale: Math.min(3, Math.max(1, Math.round(2200 / base.width))) });
-          const canvas = document.createElement("canvas");
+    const blank = slides.filter((s) => s.text.replace(/\s/g, "").length < 8);
+    if (blank.length > 0) {
+      const perPage = Math.floor(MAX_IMAGE_BYTES / blank.length);
+      for (const s of blank) {
+        onProgress(`Page ${s.n} has no selectable text; taking a picture of it`);
+        const page = await doc.getPage(s.n);
+        const base = page.getViewport({ scale: 1 });
+        const canvas = document.createElement("canvas");
+        // shrink until the picture fits its share of the upload budget
+        for (const width of [1400, 1100, 800, 600]) {
+          const viewport = page.getViewport({ scale: width / base.width });
           canvas.width = Math.ceil(viewport.width);
           canvas.height = Math.ceil(viewport.height);
           await page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport }).promise;
-          const { data } = await worker.recognize(canvas);
-          const ocr = tidyOcr(data.text);
-          // keep whichever reading found more
-          if (ocr.replace(/\s/g, "").length > texts[n - 1].replace(/\s/g, "").length) texts[n - 1] = ocr;
-          canvas.width = canvas.height = 0;
+          const data = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+          s.image = data;
+          if (data.length * 0.75 <= perPage) break;
         }
-      } finally {
-        await worker.terminate();
+        canvas.width = canvas.height = 0;
       }
     }
-    return { slides: texts.map((text, i) => ({ n: i + 1, text })), ocrPages };
+    return slides;
   } finally {
     await task.destroy();
   }
@@ -99,15 +89,6 @@ function linesFrom(items: TextItem[]): string {
       }
       return out.trim();
     })
-    .filter(Boolean)
-    .join("\n");
-}
-
-/** OCR puts spaces between Chinese characters and adds stray blank lines; remove both. */
-function tidyOcr(text: string): string {
-  return text
-    .split("\n")
-    .map((l) => l.replace(/(?<=[㐀-鿿，。！？、：；])[ \t]+(?=[㐀-鿿，。！？、：；])/g, "").trim())
     .filter(Boolean)
     .join("\n");
 }

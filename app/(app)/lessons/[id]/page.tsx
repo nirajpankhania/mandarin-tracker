@@ -13,6 +13,9 @@ import { TranscriptForm } from "@/components/TranscriptForm";
 
 type Lesson = { id: number; d: string; title: string; notes: string; slides: { n: number; text: string }[]; slides_filename: string | null; transcript: string };
 
+// reading slides calls the AI parser, which can take a while
+export const maxDuration = 60;
+
 export default async function LessonPage({ params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser();
   const id = Number((await params).id);

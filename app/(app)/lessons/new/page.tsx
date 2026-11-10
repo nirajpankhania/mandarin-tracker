@@ -4,6 +4,9 @@ import { today } from "@/lib/format";
 import { Hero } from "@/components/Hero";
 import { NewLessonForm } from "@/components/NewLessonForm";
 
+// reading slides calls the AI parser, which can take a while
+export const maxDuration = 60;
+
 export default async function NewLesson() {
   await requireUser();
   const known = (await q<{ hanzi: string }>("select hanzi from vocab")).map((r) => r.hanzi);

@@ -7,14 +7,14 @@ import { pinyin } from "pinyin-pro";
 import { q, ensureSchema, userCount } from "@/lib/db";
 import { requireUser, startSession, endSession } from "@/lib/auth";
 import { cleanTranscript, sentences, examplesFor } from "@/lib/transcript";
+import { parseLesson, type ParseInput, type ParseResult } from "@/lib/parse";
 
 const str = (f: FormData, k: string) => String(f.get(k) ?? "").trim();
 const refresh = () => revalidatePath("/", "layout");
 const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 
 function autoPinyin(hanzi: string) {
-  const syl = pinyin(hanzi, { toneType: "symbol", type: "array" });
-  return hanzi.length <= 4 ? syl.join("") : syl.join(" ");
+  return pinyin(hanzi, { toneType: "symbol", type: "array", nonZh: "removed" }).join(" ");
 }
 
 // ---------- accounts ----------
@@ -76,6 +76,20 @@ export async function changePassword(f: FormData) {
   if (next.length < 8) redirect("/account?msg=" + encodeURIComponent("New password needs at least 8 characters."));
   await q("update users set password_hash = $1 where id = $2", [await bcrypt.hash(next, 10), user.id]);
   redirect("/account?msg=" + encodeURIComponent("Password changed."));
+}
+
+// ---------- slide parsing ----------
+
+/** Send the slide text (and pictures of image-only pages) to the model and get the lesson's study items back. */
+export async function parseSlides(slides: ParseInput): Promise<ParseResult> {
+  await requireUser();
+  const clean = (Array.isArray(slides) ? slides : []).slice(0, 80).map((s, i) => ({
+    n: i + 1,
+    text: String(s.text ?? "").slice(0, 6000),
+    image: typeof s.image === "string" && s.image.length < 1_500_000 ? s.image : undefined,
+  }));
+  if (!clean.some((s) => s.text.trim() || s.image)) return { ok: false, error: "There is no text on these slides to read." };
+  return parseLesson(clean);
 }
 
 // ---------- lessons ----------

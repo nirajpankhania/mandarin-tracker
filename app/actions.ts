@@ -89,7 +89,13 @@ export async function parseSlides(slides: ParseInput): Promise<ParseResult> {
     image: typeof s.image === "string" && s.image.length < 1_500_000 ? s.image : undefined,
   }));
   if (!clean.some((s) => s.text.trim() || s.image)) return { ok: false, error: "There is no text on these slides to read." };
-  return parseLesson(clean);
+  try {
+    return await parseLesson(clean);
+  } catch (e) {
+    // report it in the page rather than as a generic failure
+    console.error("parseSlides crashed:", e);
+    return { ok: false, error: `The AI parser hit an unexpected error: ${String((e as Error)?.message ?? e).slice(0, 300)}` };
+  }
 }
 
 // ---------- lessons ----------

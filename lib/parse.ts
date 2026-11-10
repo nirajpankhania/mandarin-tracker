@@ -48,6 +48,9 @@ const SCHEMA = {
 
 const HAN = /[㐀-鿿]/;
 
+const JSON_SHAPE =
+  '\n\nReply with one JSON object only, no other text, in this shape:\n{"title": string, "summary": string, "items": [{"hanzi": string, "pinyin": string, "meaning": string, "kind": "word" | "phrase" | "sentence"}]}';
+
 type Parsed = { title: string; summary: string; items: ParsedItem[] };
 type Attempt = { ok: true; data: Parsed } | { ok: false; failures: string[]; quota?: boolean };
 
@@ -88,9 +91,21 @@ function foundryConfigured() {
   return !!process.env.ANTHROPIC_FOUNDRY_API_KEY && !!(process.env.ANTHROPIC_FOUNDRY_RESOURCE || process.env.ANTHROPIC_FOUNDRY_BASE_URL);
 }
 
+/**
+ * Where the Foundry resource lives. Accepts what people tend to paste: a bare resource name,
+ * the resource's URL, or the full "Target URI" from the Foundry portal.
+ */
+function foundryEndpoint(): { baseURL: string; resource: null } | { resource: string; baseURL: null } {
+  const raw = (process.env.ANTHROPIC_FOUNDRY_BASE_URL || process.env.ANTHROPIC_FOUNDRY_RESOURCE || "").trim();
+  if (/^https?:\/\//i.test(raw)) {
+    const u = new URL(raw);
+    const path = u.pathname.replace(/\/v1\/messages\/?$/, "").replace(/\/+$/, "");
+    return { baseURL: `${u.origin}${path.includes("/anthropic") ? path : "/anthropic"}/`, resource: null };
+  }
+  return { resource: raw.replace(/\.services\.ai\.azure\.com.*$/i, ""), baseURL: null };
+}
+
 async function viaFoundry(slides: ParseInput): Promise<Attempt> {
-  // reads ANTHROPIC_FOUNDRY_API_KEY and ANTHROPIC_FOUNDRY_RESOURCE (or _BASE_URL) from the environment
-  const client = new AnthropicFoundry({ timeout: 60_000, maxRetries: 1 });
   const content: (
     | { type: "text"; text: string }
     | { type: "image"; source: { type: "base64"; media_type: "image/jpeg"; data: string } }
@@ -98,8 +113,7 @@ async function viaFoundry(slides: ParseInput): Promise<Attempt> {
     {
       type: "text",
       text:
-        slideText(slides) +
-        '\n\nReply with one JSON object only, no other text, in this shape:\n{"title": string, "summary": string, "items": [{"hanzi": string, "pinyin": string, "meaning": string, "kind": "word" | "phrase" | "sentence"}]}',
+        slideText(slides) + JSON_SHAPE,
     },
   ];
   for (const s of slides) {
@@ -108,6 +122,7 @@ async function viaFoundry(slides: ParseInput): Promise<Attempt> {
     content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: s.image } });
   }
   try {
+    const client = new AnthropicFoundry({ apiKey: process.env.ANTHROPIC_FOUNDRY_API_KEY, ...foundryEndpoint(), timeout: 50_000, maxRetries: 0 });
     const message = await client.messages.create({ model: FOUNDRY_MODEL, max_tokens: 8000, messages: [{ role: "user", content }] });
     const text = message.content.map((b) => (b.type === "text" ? b.text : "")).join("");
     return { ok: true, data: tidy(text) };
@@ -120,38 +135,42 @@ async function viaFoundry(slides: ParseInput): Promise<Attempt> {
 
 // ---------- Gemini (fallback, or the only parser when Foundry isn't configured) ----------
 
-async function viaGemini(slides: ParseInput): Promise<Attempt & { model?: string }> {
+async function viaGemini(slides: ParseInput, deadline: number): Promise<Attempt & { model?: string }> {
   const baseUrl = process.env.GEMINI_BASE_URL; // only used for local testing
-  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
-  const input: ({ type: "text"; text: string } | { type: "image"; data: string; mime_type: "image/jpeg" })[] = [{ type: "text", text: slideText(slides) }];
+  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { timeout: 40_000, ...(baseUrl ? { baseUrl } : {}) } });
+  const input: ({ type: "text"; text: string } | { type: "image"; data: string; mime_type: "image/jpeg" })[] = [
+    { type: "text", text: slideText(slides) + JSON_SHAPE },
+  ];
   for (const s of slides) {
     if (!s.image) continue;
     input.push({ type: "text", text: `Image of slide ${s.n}:` });
     input.push({ type: "image", data: s.image, mime_type: "image/jpeg" });
   }
 
-  // Each model is tried in turn; a model is tried a second time without the optional
-  // "thinking" setting if Gemini rejects the request as invalid.
+  // Each model is tried in turn. If Gemini rejects a request as invalid (400), the same model
+  // is tried again with fewer optional settings, ending with the barest request possible.
+  const format = { response_format: { type: "text" as const, mime_type: "application/json" as const, schema: SCHEMA } };
+  const variants = [
+    { label: "full", extra: { store: false, generation_config: { thinking_level: "low" as const }, ...format } },
+    { label: "no thinking setting", extra: { store: false, ...format } },
+    { label: "bare", extra: {} },
+  ];
   const failures: string[] = [];
   let quota = false;
   for (const model of GEMINI_MODELS) {
-    for (const withThinking of [true, false]) {
+    if (Date.now() > deadline) break;
+    for (const v of variants) {
+      const withThinking = v !== variants[variants.length - 1];
       try {
-        const interaction = await client.interactions.create({
-          model,
-          input,
-          store: false,
-          ...(withThinking ? { generation_config: { thinking_level: "low" as const } } : {}),
-          response_format: { type: "text", mime_type: "application/json", schema: SCHEMA },
-        });
+        const interaction = await client.interactions.create({ model, input, ...v.extra });
         return { ok: true, data: tidy(interaction.output_text ?? ""), model };
       } catch (e) {
         const { status, msg } = describe(e);
-        console.error(`Gemini parse failed (${model}, thinking ${withThinking ? "on" : "off"}):`, status, msg);
-        failures.push(`Gemini ${model}: ${e instanceof SyntaxError ? "reply was not valid JSON" : msg}`);
+        console.error(`Gemini parse failed (${model}, ${v.label} request):`, status, msg);
+        failures.push(`Gemini ${model} (${v.label}): ${e instanceof SyntaxError ? "reply was not valid JSON" : msg}`);
         if (status === 429 || /RESOURCE_EXHAUSTED/i.test(msg)) quota = true;
         if (status === 401 || status === 403 || /API key not valid|API_KEY_INVALID/i.test(msg)) return { ok: false, failures, quota };
-        if (status === 400 && withThinking) continue; // same model again, plainer request
+        if (status === 400 && withThinking) continue; // same model again, plainer request (withThinking = not yet the bare one)
         break; // next model
       }
     }
@@ -170,6 +189,7 @@ export async function parseLesson(slides: ParseInput): Promise<ParseResult> {
         "The AI parser isn't set up yet. In Vercel's environment variables add ANTHROPIC_FOUNDRY_API_KEY and ANTHROPIC_FOUNDRY_RESOURCE, or GEMINI_API_KEY, then redeploy.",
     };
   }
+  const started = Date.now();
   const failures: string[] = [];
   let quota = false;
   if (useFoundry) {
@@ -178,7 +198,7 @@ export async function parseLesson(slides: ParseInput): Promise<ParseResult> {
     failures.push(...r.failures);
   }
   if (useGemini) {
-    const r = await viaGemini(slides);
+    const r = await viaGemini(slides, started + 100_000);
     if (r.ok) return { ok: true, ...r.data, via: useFoundry ? `Gemini (${r.model}), because Foundry failed` : `Gemini (${r.model})` };
     failures.push(...r.failures);
     quota = !!r.quota;

@@ -1,10 +1,11 @@
 import { GoogleGenAI } from "@google/genai";
+import AnthropicFoundry from "@anthropic-ai/foundry-sdk";
 
 export type ParsedItem = { hanzi: string; pinyin: string; meaning: string; kind: "word" | "phrase" | "sentence" };
 export type ParseInput = { n: number; text: string; image?: string }[]; // image: base64 JPEG for pages with no text
-export type ParseResult = { ok: true; title: string; summary: string; items: ParsedItem[] } | { ok: false; error: string };
+export type ParseResult = { ok: true; title: string; summary: string; items: ParsedItem[]; via: string } | { ok: false; error: string };
 
-const MODELS = [process.env.GEMINI_MODEL || "gemini-3.8-flash", "gemini-3.5-flash-lite"];
+const GEMINI_MODELS = Array.from(new Set([process.env.GEMINI_MODEL || "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"]));
 
 const INSTRUCTIONS = `You are helping an English-speaking adult who is learning Mandarin with a private teacher.
 Below is the content of the teacher's lesson slides. Build the study list for this lesson.
@@ -47,69 +48,143 @@ const SCHEMA = {
 
 const HAN = /[㐀-鿿]/;
 
-export async function parseLesson(slides: ParseInput): Promise<ParseResult> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return { ok: false, error: "The AI parser isn't set up yet. Add GEMINI_API_KEY in Vercel's environment variables and redeploy." };
-  }
-  const baseUrl = process.env.GEMINI_BASE_URL; // only used for local testing
-  const client = new GoogleGenAI({ apiKey, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
+type Parsed = { title: string; summary: string; items: ParsedItem[] };
+type Attempt = { ok: true; data: Parsed } | { ok: false; failures: string[]; quota?: boolean };
 
-  const input: ({ type: "text"; text: string } | { type: "image"; data: string; mime_type: "image/jpeg" })[] = [];
+/** Turn the model's JSON into clean items: Chinese only, no duplicates. */
+function tidy(raw: string): Parsed {
+  // tolerate a ```json fence or stray words around the object
+  const out = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
+  const seen = new Set<string>();
+  const items: ParsedItem[] = [];
+  for (const it of Array.isArray(out.items) ? out.items : []) {
+    const hanzi = String(it.hanzi ?? "").trim();
+    if (!hanzi || !HAN.test(hanzi) || seen.has(hanzi)) continue;
+    seen.add(hanzi);
+    const kind = it.kind === "word" || it.kind === "sentence" ? it.kind : "phrase";
+    items.push({ hanzi, pinyin: String(it.pinyin ?? "").trim(), meaning: String(it.meaning ?? "").trim(), kind });
+  }
+  return { title: String(out.title ?? "").trim(), summary: String(out.summary ?? "").trim(), items };
+}
+
+function slideText(slides: ParseInput): string {
   let text = INSTRUCTIONS + "\n\n--- SLIDES ---\n";
   for (const s of slides) {
     text += `\n[Slide ${s.n}]\n${s.image ? "(this slide is a picture; it follows as an image)" : s.text}\n`;
   }
-  input.push({ type: "text", text });
+  return text;
+}
+
+function describe(e: unknown): { status: number; msg: string } {
+  const err = e as { status?: number; statusCode?: number; message?: string };
+  return { status: err.status ?? err.statusCode ?? 0, msg: String(err.message ?? e).replace(/\s+/g, " ").slice(0, 300) };
+}
+
+// ---------- Claude on Microsoft Foundry (first choice when configured) ----------
+
+const FOUNDRY_MODEL = process.env.FOUNDRY_MODEL || "claude-fable-5-2"; // the deployment name in Foundry
+
+function foundryConfigured() {
+  return !!process.env.ANTHROPIC_FOUNDRY_API_KEY && !!(process.env.ANTHROPIC_FOUNDRY_RESOURCE || process.env.ANTHROPIC_FOUNDRY_BASE_URL);
+}
+
+async function viaFoundry(slides: ParseInput): Promise<Attempt> {
+  // reads ANTHROPIC_FOUNDRY_API_KEY and ANTHROPIC_FOUNDRY_RESOURCE (or _BASE_URL) from the environment
+  const client = new AnthropicFoundry({ timeout: 60_000, maxRetries: 1 });
+  const content: (
+    | { type: "text"; text: string }
+    | { type: "image"; source: { type: "base64"; media_type: "image/jpeg"; data: string } }
+  )[] = [
+    {
+      type: "text",
+      text:
+        slideText(slides) +
+        '\n\nReply with one JSON object only, no other text, in this shape:\n{"title": string, "summary": string, "items": [{"hanzi": string, "pinyin": string, "meaning": string, "kind": "word" | "phrase" | "sentence"}]}',
+    },
+  ];
+  for (const s of slides) {
+    if (!s.image) continue;
+    content.push({ type: "text", text: `Image of slide ${s.n}:` });
+    content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: s.image } });
+  }
+  try {
+    const message = await client.messages.create({ model: FOUNDRY_MODEL, max_tokens: 8000, messages: [{ role: "user", content }] });
+    const text = message.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+    return { ok: true, data: tidy(text) };
+  } catch (e) {
+    const { status, msg } = describe(e);
+    console.error(`Foundry parse failed (${FOUNDRY_MODEL}):`, status, msg);
+    return { ok: false, failures: [`Foundry ${FOUNDRY_MODEL}: ${e instanceof SyntaxError ? "reply was not valid JSON" : msg}`] };
+  }
+}
+
+// ---------- Gemini (fallback, or the only parser when Foundry isn't configured) ----------
+
+async function viaGemini(slides: ParseInput): Promise<Attempt & { model?: string }> {
+  const baseUrl = process.env.GEMINI_BASE_URL; // only used for local testing
+  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, ...(baseUrl ? { httpOptions: { baseUrl } } : {}) });
+  const input: ({ type: "text"; text: string } | { type: "image"; data: string; mime_type: "image/jpeg" })[] = [{ type: "text", text: slideText(slides) }];
   for (const s of slides) {
     if (!s.image) continue;
     input.push({ type: "text", text: `Image of slide ${s.n}:` });
     input.push({ type: "image", data: s.image, mime_type: "image/jpeg" });
   }
 
-  let lastError = "";
-  for (const model of MODELS) {
-    try {
-      const interaction = await client.interactions.create({
-        model,
-        input,
-        store: false,
-        generation_config: { thinking_level: "low" },
-        response_format: { type: "text", mime_type: "application/json", schema: SCHEMA },
-      });
-      const out = JSON.parse(interaction.output_text ?? "");
-      const seen = new Set<string>();
-      const items: ParsedItem[] = [];
-      for (const it of Array.isArray(out.items) ? out.items : []) {
-        const hanzi = String(it.hanzi ?? "").trim();
-        if (!hanzi || !HAN.test(hanzi) || seen.has(hanzi)) continue;
-        seen.add(hanzi);
-        const kind = it.kind === "word" || it.kind === "sentence" ? it.kind : "phrase";
-        items.push({ hanzi, pinyin: String(it.pinyin ?? "").trim(), meaning: String(it.meaning ?? "").trim(), kind });
+  // Each model is tried in turn; a model is tried a second time without the optional
+  // "thinking" setting if Gemini rejects the request as invalid.
+  const failures: string[] = [];
+  let quota = false;
+  for (const model of GEMINI_MODELS) {
+    for (const withThinking of [true, false]) {
+      try {
+        const interaction = await client.interactions.create({
+          model,
+          input,
+          store: false,
+          ...(withThinking ? { generation_config: { thinking_level: "low" as const } } : {}),
+          response_format: { type: "text", mime_type: "application/json", schema: SCHEMA },
+        });
+        return { ok: true, data: tidy(interaction.output_text ?? ""), model };
+      } catch (e) {
+        const { status, msg } = describe(e);
+        console.error(`Gemini parse failed (${model}, thinking ${withThinking ? "on" : "off"}):`, status, msg);
+        failures.push(`Gemini ${model}: ${e instanceof SyntaxError ? "reply was not valid JSON" : msg}`);
+        if (status === 429 || /RESOURCE_EXHAUSTED/i.test(msg)) quota = true;
+        if (status === 401 || status === 403 || /API key not valid|API_KEY_INVALID/i.test(msg)) return { ok: false, failures, quota };
+        if (status === 400 && withThinking) continue; // same model again, plainer request
+        break; // next model
       }
-      return { ok: true, title: String(out.title ?? "").trim(), summary: String(out.summary ?? "").trim(), items };
-    } catch (e) {
-      const err = e as { status?: number; statusCode?: number; message?: string };
-      const status = err.status ?? err.statusCode ?? 0;
-      const msg = String(err.message ?? e);
-      console.error(`Gemini parse failed (${model}):`, status, msg.slice(0, 500));
-      if (status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(msg)) {
-        lastError = "Gemini's free quota is used up for the moment. Wait a little and choose the file again, or save the lesson now and add words by hand.";
-        continue; // the lighter model has its own quota
-      }
-      if (status === 404 || /not found|not supported/i.test(msg)) {
-        lastError = `The model "${model}" isn't available for this key.`;
-        continue;
-      }
-      if (status === 400 && /API key/i.test(msg) || status === 401 || status === 403) {
-        return { ok: false, error: "Gemini rejected the API key. Check GEMINI_API_KEY in Vercel, then redeploy." };
-      }
-      if (e instanceof SyntaxError) {
-        lastError = "Gemini's reply couldn't be read. Choose the file again to retry.";
-        continue;
-      }
-      return { ok: false, error: "The AI parser failed (" + (status || "no response") + "). Choose the file again to retry, or save the lesson and add words by hand." };
     }
   }
-  return { ok: false, error: lastError };
+  return { ok: false, failures, quota };
+}
+
+/** Foundry first if it is set up, then Gemini. The first one that answers wins. */
+export async function parseLesson(slides: ParseInput): Promise<ParseResult> {
+  const useFoundry = foundryConfigured();
+  const useGemini = !!process.env.GEMINI_API_KEY;
+  if (!useFoundry && !useGemini) {
+    return {
+      ok: false,
+      error:
+        "The AI parser isn't set up yet. In Vercel's environment variables add ANTHROPIC_FOUNDRY_API_KEY and ANTHROPIC_FOUNDRY_RESOURCE, or GEMINI_API_KEY, then redeploy.",
+    };
+  }
+  const failures: string[] = [];
+  let quota = false;
+  if (useFoundry) {
+    const r = await viaFoundry(slides);
+    if (r.ok) return { ok: true, ...r.data, via: `Claude on Foundry (${FOUNDRY_MODEL})` };
+    failures.push(...r.failures);
+  }
+  if (useGemini) {
+    const r = await viaGemini(slides);
+    if (r.ok) return { ok: true, ...r.data, via: useFoundry ? `Gemini (${r.model}), because Foundry failed` : `Gemini (${r.model})` };
+    failures.push(...r.failures);
+    quota = !!r.quota;
+  }
+  const lead = quota
+    ? "Gemini's free quota is used up for the moment. Wait a little and choose the file again, or save the lesson now and add words by hand."
+    : "The AI parser couldn't read these slides. You can save the lesson and add words by hand, or choose the file again to retry.";
+  return { ok: false, error: `${lead} What went wrong: ${failures.join(" / ")}` };
 }

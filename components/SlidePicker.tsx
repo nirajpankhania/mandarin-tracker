@@ -5,7 +5,7 @@ import { readPptx, type Slide } from "@/lib/pptx";
 import { parseSlides } from "@/app/actions";
 
 export type Candidate = { hanzi: string; pinyin: string; meaning: string; kind: "word" | "phrase" | "sentence"; keep: boolean };
-export type Picked = { slides: Slide[]; filename: string | null; candidates: Candidate[]; title: string; summary: string };
+export type Picked = { slides: Slide[]; filename: string | null; candidates: Candidate[]; title: string; summary: string; via: string };
 
 const KIND_LABEL = { word: "Word", phrase: "Phrase", sentence: "Sentence" } as const;
 
@@ -47,16 +47,16 @@ export function SlidePicker({ known, value, onChange }: { known: string[]; value
       const res = await parseSlides(slides);
       if (!res.ok) {
         setError(res.error);
-        onChange({ slides: stored, filename: file.name, candidates: [], title: "", summary: "" });
+        onChange({ slides: stored, filename: file.name, candidates: [], title: "", summary: "", via: "" });
         return;
       }
       const have = new Set(known);
       const fresh = res.items.filter((i) => !have.has(i.hanzi));
       setSkipped(res.items.length - fresh.length);
-      onChange({ slides: stored, filename: file.name, candidates: fresh.map((i) => ({ ...i, keep: true })), title: res.title, summary: res.summary });
+      onChange({ slides: stored, filename: file.name, candidates: fresh.map((i) => ({ ...i, keep: true })), title: res.title, summary: res.summary, via: res.via });
     } catch {
       setError("Couldn't reach the AI parser. Check your connection and choose the file again. The slide text is kept, so you can still save the lesson.");
-      onChange({ slides: stored, filename: file.name, candidates: [], title: "", summary: "" });
+      onChange({ slides: stored, filename: file.name, candidates: [], title: "", summary: "", via: "" });
     } finally {
       setBusy("");
     }
@@ -78,6 +78,7 @@ export function SlidePicker({ known, value, onChange }: { known: string[]; value
         <div className="frame frame-khaki">
           <p className="meta text-center mb-3">
             {value.slides.length} {value.slides.length === 1 ? "slide" : "slides"} read
+            {value.via && ` by ${value.via}`}
           </p>
           <div className="card px-4 py-3">
             {value.candidates.length === 0 ? (
@@ -117,5 +118,5 @@ export function SlidePicker({ known, value, onChange }: { known: string[]; value
   );
 }
 
-export const emptyPick: Picked = { slides: [], filename: null, candidates: [], title: "", summary: "" };
+export const emptyPick: Picked = { slides: [], filename: null, candidates: [], title: "", summary: "", via: "" };
 export const keptVocab = (p: Picked) => p.candidates.filter((c) => c.keep).map(({ hanzi, pinyin, meaning }) => ({ hanzi, pinyin, meaning }));

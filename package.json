@@ -9,6 +9,7 @@
     "postinstall": "node scripts/copy-pdfjs.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/foundry-sdk": "^1.1.1",
     "@google/genai": "^3.0.0",
     "bcryptjs": "^3.0.3",
     "jose": "^6.2.17",

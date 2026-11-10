@@ -9,8 +9,8 @@ Built with Next.js, deployed on Vercel, data in Neon Postgres. Both free tiers a
 ## What it does
 
 - **Lessons**: date, title and notes. Upload the lesson's slides as `.pptx` or `.pdf`. The text is
-  read in your browser (the file itself is never stored), then sent to Google's Gemini model,
-  which returns the lesson's phrases, sentences and key words with pinyin and English, plus a
+  read in your browser (the file itself is never stored), then sent to an AI model (Claude on
+  Microsoft Foundry, with Gemini as the fallback), which returns the lesson's phrases, sentences and key words with pinyin and English, plus a
   suggested title and summary. You tick what to keep and correct anything before saving.
 - **Homework**: either of you adds tasks with a due date. The student ticks them off and
   leaves a note; the teacher leaves feedback.
@@ -29,7 +29,12 @@ Built with Next.js, deployed on Vercel, data in Neon Postgres. Both free tiers a
    Before deploying, add two environment variables:
    - `DATABASE_URL`: the Neon connection string
    - `AUTH_SECRET`: a long random string (`openssl rand -base64 32`)
-   - `GEMINI_API_KEY`: a free key from https://aistudio.google.com/apikey (needed for reading slides)
+   - For reading slides, one or both of:
+     - `ANTHROPIC_FOUNDRY_API_KEY` and `ANTHROPIC_FOUNDRY_RESOURCE` (your Microsoft Foundry
+       resource name): Claude on Foundry, tried first. Optional `FOUNDRY_MODEL` is the
+       deployment name (default `claude-fable-5-2`).
+     - `GEMINI_API_KEY`: a free key from https://aistudio.google.com/apikey, used when Foundry
+       isn't set up or fails (expired key, quota, outage).
 4. Open the site Vercel gives you. The first visit shows a setup page that creates the
    database tables and the two logins. It only works once.
 5. Send your teacher the address and their starter password. They can change it under
@@ -40,18 +45,20 @@ Every later push to GitHub redeploys automatically.
 ## Run it on your own computer
 
 ```
-# create .env.local containing DATABASE_URL, AUTH_SECRET and GEMINI_API_KEY
+# create .env.local containing DATABASE_URL, AUTH_SECRET and the parser keys above
 npm install
 npm run dev
 ```
 
 ## Good to know
 
-- Reading slides needs `GEMINI_API_KEY`. On Gemini's free tier, Google may use what is sent
-  (the slide text, and pictures of pages that have no selectable text) to improve its products.
-  If the key is missing or the free quota runs out, the upload says so and you can still save
-  the lesson and add words by hand.
-- The app tries `gemini-3.8-flash` first and falls back to `gemini-3.5-flash-lite`. Set
+- Slides are read by Claude on Microsoft Foundry when that is configured, and by Gemini
+  otherwise or when Foundry fails. The upload says which one answered. Foundry usage is billed
+  to the Azure subscription that owns the key. On Gemini's free tier, Google may use what is
+  sent (the slide text, and pictures of pages that have no selectable text) to improve its
+  products. If neither works, the upload says why and you can still save the lesson and add
+  words by hand.
+- Gemini tries `gemini-3.8-flash`, then `gemini-3.5-flash-lite`, then `gemini-3.6-flash`. Set
   `GEMINI_MODEL` to try a different model first.
 - Pinyin and meanings from the parser are AI-written; check them before saving.
 - Transcript matching is only as good as the transcript. Set the call's transcription

@@ -1,0 +1,31 @@
+{
+  "name": "mandarin-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "jose": "^6.2.17",
+    "jszip": "^3.10.2",
+    "next": "16.4.6",
+    "pg": "^8.23.1",
+    "pinyin-pro": "^3.29.5",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "sql.js": "^1.15.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/turbopack": "4.3.3",
+    "@types/node": "^20",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/sql.js": "^1.4.11",
+    "tailwindcss": "4.3.3",
+    "typescript": "^5"
+  }
+}

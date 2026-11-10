@@ -6,29 +6,39 @@ import { detectVocab, type Candidate } from "@/lib/detect";
 
 export type Picked = { slides: Slide[]; filename: string | null; candidates: Candidate[] };
 
-/** Choose a .pptx; its text is read here in the browser and the words found are listed to tick. */
+/** Choose a .pptx or .pdf; its text is read here in the browser and the words found are listed to tick. */
 export function SlidePicker({ known, value, onChange }: { known: string[]; value: Picked; onChange: (p: Picked) => void }) {
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState("");
+  const [ocrPages, setOcrPages] = useState(0);
   const [skipped, setSkipped] = useState(0);
 
   async function onFile(file: File | undefined) {
     setError("");
     if (!file) return;
-    if (!/\.pptx$/i.test(file.name)) {
-      setError("That isn't a .pptx file. Older .ppt files and PDFs need saving as .pptx first.");
+    const isPdf = /\.pdf$/i.test(file.name);
+    if (!isPdf && !/\.pptx$/i.test(file.name)) {
+      setError("Choose a .pptx or .pdf file. Older .ppt files need saving as one of those first.");
       return;
     }
-    setBusy(true);
+    setBusy("Reading slides");
     try {
-      const slides = await readPptx(file);
+      let slides;
+      let ocr = 0;
+      if (isPdf) {
+        const { readPdf } = await import("@/lib/pdf");
+        ({ slides, ocrPages: ocr } = await readPdf(file, setBusy));
+      } else {
+        slides = await readPptx(file);
+      }
+      setOcrPages(ocr);
       const { candidates, skippedKnown } = detectVocab(slides.map((s) => s.text).join("\n"), new Set(known));
       setSkipped(skippedKnown);
       onChange({ slides, filename: file.name, candidates });
     } catch (e) {
       setError(`Couldn't read that file: ${(e as Error).message}`);
     } finally {
-      setBusy(false);
+      setBusy("");
     }
   }
 
@@ -39,14 +49,23 @@ export function SlidePicker({ known, value, onChange }: { known: string[]; value
   return (
     <div className="space-y-4">
       <label className="field">
-        <span className="eyebrow">Lesson slides (.pptx)</span>
-        <input type="file" accept=".pptx" onChange={(e) => onFile(e.target.files?.[0])} />
+        <span className="eyebrow">Lesson slides (.pptx or .pdf)</span>
+        <input type="file" accept=".pptx,.pdf,application/pdf" onChange={(e) => onFile(e.target.files?.[0])} />
       </label>
-      {busy && <p className="text-sm">Reading slides…</p>}
+      {busy && <p className="text-sm" role="status">{busy}…</p>}
       {error && <p className="text-sm text-rust">{error}</p>}
       {value.filename && !busy && (
         <div className="frame frame-khaki">
-          <p className="meta text-center mb-3">{value.slides.length} slides read</p>
+          <p className="meta text-center mb-3">
+            {value.slides.length} {value.slides.length === 1 ? "slide" : "slides"} read
+            {ocrPages > 0 && `, ${ocrPages} from page images`}
+          </p>
+          {ocrPages > 0 && (
+            <p className="card px-4 py-3 mb-3 text-sm">
+              {ocrPages === value.slides.length ? "These pages" : `${ocrPages} of these pages`} had no selectable text, so the words were
+              recognised from the picture. Check the characters before saving; similar-looking ones can be mixed up.
+            </p>
+          )}
           <div className="card px-4 py-3">
             {value.candidates.length === 0 ? (
               <p className="text-sm py-2">No new Chinese words found on these slides.</p>

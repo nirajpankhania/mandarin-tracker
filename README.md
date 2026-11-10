@@ -8,7 +8,7 @@ Built with Next.js, deployed on Vercel, data in Neon Postgres. Both free tiers a
 
 ## What it does
 
-- **Lessons**: date, title and notes. Upload the lesson's `.pptx`; the slide text is read
+- **Lessons**: date, title and notes. Upload the lesson's slides as `.pptx` or `.pdf`; the text is read
   in your browser (the file itself is never uploaded or stored) and Chinese words are
   listed with pinyin for you to tick. Words the slide already glosses
   (`苹果 píngguǒ apple`, or a table row) come with their meaning filled in.
@@ -46,8 +46,10 @@ npm run dev
 
 ## Good to know
 
-- Only `.pptx` works. Save older `.ppt` files or Keynote decks as `.pptx` first.
-  Text inside pictures on a slide can't be read.
+- Slides can be `.pptx` or `.pdf`. PDF pages with no selectable text (scans, or slides saved
+  as pictures) are read with OCR in the browser. That is slower, downloads a ~20 MB language
+  file the first time, and can confuse similar-looking characters, so check the word list.
+  In a `.pptx`, text inside pictures is not read.
 - Transcript matching is only as good as the transcript. Set the call's transcription
   language to Chinese, or the Chinese comes out garbled.
 - Dates use the `APP_TIMEZONE` setting (default `America/New_York`).

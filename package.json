@@ -5,18 +5,21 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "postinstall": "node scripts/copy-pdfjs.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "jose": "^6.2.17",
     "jszip": "^3.10.2",
     "next": "16.4.6",
+    "pdfjs-dist": "^6.5.438",
     "pg": "^8.23.1",
     "pinyin-pro": "^3.29.5",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "sql.js": "^1.15.2"
+    "sql.js": "^1.15.2",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "4.3.3",

@@ -42,7 +42,7 @@ export function SlidePicker({ known, value, onChange }: { known: string[]; value
     }
 
     const stored: Slide[] = slides.map((s) => ({ n: s.n, text: s.text || (s.image ? "(picture slide)" : "") }));
-    setBusy("Working out the words and phrases");
+    setBusy(slides.length > 8 ? "Working out the words and phrases (a long deck can take a minute or two)" : "Working out the words and phrases");
     const began = Date.now();
     try {
       const res = await parseSlides(slides);
@@ -58,7 +58,7 @@ export function SlidePicker({ known, value, onChange }: { known: string[]; value
     } catch (e) {
       const secs = Math.round((Date.now() - began) / 1000);
       setError(
-        (secs >= 55
+        (secs >= 290
           ? `The AI parser didn't answer within ${secs} seconds, so the request was cut off.`
           : `The request to the AI parser failed after ${secs} seconds (${String((e as Error)?.message ?? e).slice(0, 120)}). If you just redeployed, reload this page and try again.`) +
           " The slide text is kept, so you can still save the lesson."

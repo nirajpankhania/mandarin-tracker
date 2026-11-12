@@ -12,7 +12,7 @@ Below is the content of the teacher's lesson slides. Build the study list for th
 
 Return:
 - "title": a short English title for the lesson (use the slide deck's own title if it has one).
-- "summary": 2-4 plain sentences in English on what the lesson covers, including any sentence patterns it teaches (for example "最近 + adjective").
+- "summary": 1-3 plain sentences in English on what these slides cover, including any sentence patterns it teaches (for example "最近 + adjective").
 - "items": everything worth a flashcard, in the order it appears:
   1. Every Chinese phrase and sentence shown on the slides, exactly as written, keeping its punctuation. kind is "phrase" for short expressions and "sentence" for full sentences or questions.
   2. After those, the individual building-block words used in them that a beginner should learn on their own (for example 最近, 忙, 但是). kind is "word". Leave out words that are already listed as a phrase.
@@ -105,27 +105,50 @@ function foundryEndpoint(): { baseURL: string; resource: null } | { resource: st
   return { resource: raw.replace(/\.services\.ai\.azure\.com.*$/i, ""), baseURL: null };
 }
 
-async function viaFoundry(slides: ParseInput): Promise<Attempt> {
+const FOUNDRY_CHUNK = 5; // slides per request
+
+/** One request to Claude for a run of slides. */
+async function foundryCall(client: AnthropicFoundry, slides: ParseInput): Promise<Parsed> {
   const content: (
     | { type: "text"; text: string }
     | { type: "image"; source: { type: "base64"; media_type: "image/jpeg"; data: string } }
-  )[] = [
-    {
-      type: "text",
-      text:
-        slideText(slides) + JSON_SHAPE,
-    },
-  ];
+  )[] = [{ type: "text", text: slideText(slides) + JSON_SHAPE }];
   for (const s of slides) {
     if (!s.image) continue;
     content.push({ type: "text", text: `Image of slide ${s.n}:` });
     content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: s.image } });
   }
+  const message = await client.messages.create({ model: FOUNDRY_MODEL, max_tokens: 8000, messages: [{ role: "user", content }] });
+  return tidy(message.content.map((b) => (b.type === "text" ? b.text : "")).join(""));
+}
+
+/**
+ * A long deck in one request can take over a minute, so the slides are sent a few at a time,
+ * all at once, and the answers are stitched back together in slide order.
+ */
+async function viaFoundry(slides: ParseInput): Promise<Attempt> {
   try {
-    const client = new AnthropicFoundry({ apiKey: process.env.ANTHROPIC_FOUNDRY_API_KEY, ...foundryEndpoint(), timeout: 50_000, maxRetries: 0 });
-    const message = await client.messages.create({ model: FOUNDRY_MODEL, max_tokens: 8000, messages: [{ role: "user", content }] });
-    const text = message.content.map((b) => (b.type === "text" ? b.text : "")).join("");
-    return { ok: true, data: tidy(text) };
+    const client = new AnthropicFoundry({ apiKey: process.env.ANTHROPIC_FOUNDRY_API_KEY, ...foundryEndpoint(), timeout: 120_000, maxRetries: 1 });
+    const chunks: ParseInput[] = [];
+    for (let i = 0; i < slides.length; i += FOUNDRY_CHUNK) chunks.push(slides.slice(i, i + FOUNDRY_CHUNK));
+    const parts = await Promise.all(chunks.map((c) => foundryCall(client, c)));
+
+    const seen = new Set<string>();
+    const items: ParsedItem[] = [];
+    // phrases and sentences in slide order first, then the building-block words
+    for (const wantWord of [false, true]) {
+      for (const p of parts) {
+        for (const it of p.items) {
+          if ((it.kind === "word") !== wantWord || seen.has(it.hanzi)) continue;
+          seen.add(it.hanzi);
+          items.push(it);
+        }
+      }
+    }
+    return {
+      ok: true,
+      data: { title: parts.find((p) => p.title)?.title ?? "", summary: parts.map((p) => p.summary).filter(Boolean).join(" "), items },
+    };
   } catch (e) {
     const { status, msg } = describe(e);
     console.error(`Foundry parse failed (${FOUNDRY_MODEL}):`, status, msg);
@@ -137,7 +160,8 @@ async function viaFoundry(slides: ParseInput): Promise<Attempt> {
 
 async function viaGemini(slides: ParseInput, deadline: number): Promise<Attempt & { model?: string }> {
   const baseUrl = process.env.GEMINI_BASE_URL; // only used for local testing
-  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { timeout: 40_000, ...(baseUrl ? { baseUrl } : {}) } });
+  // v1beta is the version Google documents for this API; the default (v1) rejects pictures
+  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, apiVersion: "v1beta", httpOptions: { timeout: 60_000, ...(baseUrl ? { baseUrl } : {}) } });
   const input: ({ type: "text"; text: string } | { type: "image"; data: string; mime_type: "image/jpeg" })[] = [
     { type: "text", text: slideText(slides) + JSON_SHAPE },
   ];
@@ -198,7 +222,7 @@ export async function parseLesson(slides: ParseInput): Promise<ParseResult> {
     failures.push(...r.failures);
   }
   if (useGemini) {
-    const r = await viaGemini(slides, started + 100_000);
+    const r = await viaGemini(slides, started + 230_000);
     if (r.ok) return { ok: true, ...r.data, via: useFoundry ? `Gemini (${r.model}), because Foundry failed` : `Gemini (${r.model})` };
     failures.push(...r.failures);
     quota = !!r.quota;

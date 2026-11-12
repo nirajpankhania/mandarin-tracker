@@ -32,7 +32,8 @@ export async function readPdf(file: File, onProgress: Progress = () => {}): Prom
       slides.push({ n, text: linesFrom(content.items as TextItem[]) });
     }
 
-    const blank = slides.filter((s) => s.text.replace(/\s/g, "").length < 8);
+    // only pages with (almost) nothing selectable; a title slide with a few words is still text
+    const blank = slides.filter((s) => s.text.replace(/\s/g, "").length < 3);
     if (blank.length > 0) {
       const perPage = Math.floor(MAX_IMAGE_BYTES / blank.length);
       for (const s of blank) {

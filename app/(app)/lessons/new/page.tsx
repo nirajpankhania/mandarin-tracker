@@ -5,7 +5,7 @@ import { Hero } from "@/components/Hero";
 import { NewLessonForm } from "@/components/NewLessonForm";
 
 // reading slides calls the AI parser, which can take a while
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 export default async function NewLesson() {
   await requireUser();
